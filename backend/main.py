@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.auth import UserCreate, UserRead, UserUpdate, auth_backend, current_user, fastapi_users
+from backend.chat import router as chat_router
 from backend.database import create_db_and_tables
 
 
@@ -41,6 +42,7 @@ app.include_router(
     prefix="/users",
     tags=["users"],
 )
+app.include_router(chat_router, prefix="/v1", tags=["openai-compatible"])
 
 
 @app.get("/")
@@ -60,3 +62,8 @@ async def me(user=Depends(current_user)):
         "email": user.email,
         "display_name": user.display_name,
     }
+
+# cd d:\bysq\景区数字人
+# uvicorn backend.main:app --reload
+
+# pip install -r backend\requirements.txt

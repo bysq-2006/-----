@@ -44,8 +44,7 @@ button {
 .app-shell {
   position: relative;
   min-height: 100vh;
-  background:
-    linear-gradient(180deg, var(--brand) 0, var(--brand) 218px, #f4f6f8 218px, #f4f6f8 100%);
+  background: #f4f6f8;
   overflow: hidden;
 }
 
@@ -57,6 +56,11 @@ button {
 .screen {
   min-height: calc(100vh - 92px);
   padding: calc(env(safe-area-inset-top, 0px) + 20px) var(--shell-padding) 0;
+}
+
+.avatar-screen {
+  min-height: 100vh;
+  padding: 0;
 }
 
 .screen__content {

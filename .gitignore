@@ -1,6 +1,9 @@
 __pycache__/
 *.py[cod]
 *.db
+.env
+.env.*
+!.env.example
 .venv/
 venv/
 
@@ -8,6 +11,7 @@ frontend/node_modules/
 frontend/dist/
 frontend/.env
 frontend/.env.*
+示范景区公开资料包/
 
 .DS_Store
 Thumbs.db

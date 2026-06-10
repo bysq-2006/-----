@@ -1,5 +1,9 @@
+<script setup>
+import AvatarChatBox from '../components/AvatarChatBox.vue'
+</script>
+
 <template>
-  <section class="screen screen--empty">
-    <div class="screen__content"></div>
+  <section class="screen avatar-screen">
+    <AvatarChatBox />
   </section>
 </template>
