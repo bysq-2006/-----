@@ -1,159 +1,585 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref } from 'vue'
+import { initOpenAvatarConfig } from '../services/openAvatarClient'
+import {
+  closeAvatarWebRtc,
+  createLocalStream,
+  playRemoteVideo,
+  replaceInputAudioTrack,
+  setupAvatarWebRtc,
+} from '../utils/avatarWebRtc'
 
-const avatarBaseUrl =
-  import.meta.env.VITE_AVATAR_CHAT_URL || 'https://localhost:8282/ui/index.html'
+const remoteVideo = ref(null)
+const messagesContainer = ref(null)
+const voiceEnabled = ref(false)
+const input = ref('')
+const status = ref('idle')
+const error = ref('')
+const messages = ref([])
+const loadingSeconds = ref(0)
+const waitingReply = ref(false)
 
-const interactionMode = ref('text')
+let localStream = null
+let peerConnection = null
+let dataChannel = null
+let loadingTimer = null
+const activeStreamMessageIds = {
+  user: '',
+  avatar: '',
+}
 
-const avatarUrl = computed(() => {
-  const url = new URL(avatarBaseUrl, window.location.href)
-  url.searchParams.set('embed', '1')
-  url.searchParams.set('hide_camera', '1')
-  url.searchParams.set('compact', '1')
-  url.searchParams.set('asr', interactionMode.value === 'asr' ? '1' : '0')
-  return url.toString()
+const connected = computed(() => status.value === 'connected')
+const showLoading = computed(() => status.value === 'connecting' || Boolean(error.value))
+const statusText = computed(() => {
+  if (error.value) return error.value
+  if (status.value === 'connecting') return `数字人正在初始化，已等待 ${loadingSeconds.value} 秒...`
+  if (waitingReply.value) return '问题已发送，正在等待数字人回复...'
+  if (voiceEnabled.value) return '语音模式已开启，可以直接说话'
+  return '文字输入模式'
+})
+
+const startLoadingTimer = () => {
+  window.clearInterval(loadingTimer)
+  loadingSeconds.value = 0
+  loadingTimer = window.setInterval(() => {
+    loadingSeconds.value += 1
+  }, 1000)
+}
+
+const stopLoadingTimer = () => {
+  window.clearInterval(loadingTimer)
+  loadingTimer = null
+}
+
+const scrollMessagesToBottom = () => {
+  nextTick(() => {
+    const target = messagesContainer.value
+    if (target) target.scrollTop = target.scrollHeight
+  })
+}
+
+const appendMessage = (role, text) => {
+  if (!text) return
+  const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  messages.value.push({
+    id,
+    role,
+    text,
+  })
+  if (messages.value.length > 8) {
+    messages.value = messages.value.slice(-8)
+  }
+  scrollMessagesToBottom()
+  return id
+}
+
+const appendToMessage = (id, chunk) => {
+  const target = messages.value.find((message) => message.id === id)
+  if (target) {
+    target.text += chunk
+    scrollMessagesToBottom()
+  }
+}
+
+const appendOrUpdateStreamMessage = (role, chunk) => {
+  if (!chunk) return
+
+  const activeId = activeStreamMessageIds[role]
+  if (activeId) {
+    appendToMessage(activeId, chunk)
+    return
+  }
+
+  activeStreamMessageIds[role] = appendMessage(role, chunk) || ''
+}
+
+const finishStreamMessages = () => {
+  activeStreamMessageIds.user = ''
+  activeStreamMessageIds.avatar = ''
+}
+
+const resumeRemoteVideo = async () => {
+  await nextTick()
+
+  const video = remoteVideo.value
+  if (!video) return
+
+  if (peerConnection && ['closed', 'failed'].includes(peerConnection.connectionState)) {
+    await connect()
+    return
+  }
+
+  await playRemoteVideo(video, { unmuteAfterPlay: !video.muted })
+}
+
+const bindDataChannel = () => {
+  dataChannel?.addEventListener('message', (event) => {
+    let data
+    try {
+      data = JSON.parse(event.data)
+    } catch {
+      return
+    }
+
+    const name = data?.header?.name
+    const text = data?.payload?.text
+    if (name === 'EchoHumanText' || name === 'EchoAvatarText') {
+      if (name === 'EchoAvatarText') waitingReply.value = false
+      appendOrUpdateStreamMessage(name === 'EchoHumanText' ? 'user' : 'avatar', text || '')
+    } else if (name === 'EndSpeech' || name === 'InterruptNotification') {
+      waitingReply.value = false
+      finishStreamMessages()
+    } else if (name === 'ChatSignal' && data?.payload?.type === 'stream_end') {
+      waitingReply.value = false
+      finishStreamMessages()
+    }
+  })
+}
+
+const connect = async () => {
+  if (status.value === 'connecting') return
+  error.value = ''
+  waitingReply.value = false
+  finishStreamMessages()
+
+  if (peerConnection) {
+    closeAvatarWebRtc({ peerConnection, stream: localStream })
+    peerConnection = null
+    dataChannel = null
+    localStream = null
+  }
+
+  try {
+    status.value = 'connecting'
+    startLoadingTimer()
+    const config = await initOpenAvatarConfig()
+    localStream = await createLocalStream({ useAsr: false })
+    const connection = await setupAvatarWebRtc({
+      stream: localStream,
+      remoteVideo: remoteVideo.value,
+      rtcConfiguration: config.rtc_configuration,
+    })
+    peerConnection = connection.peerConnection
+    dataChannel = connection.dataChannel
+    bindDataChannel()
+    status.value = 'connected'
+  } catch (err) {
+    status.value = 'idle'
+    error.value = err?.message || '数字人连接失败'
+  } finally {
+    stopLoadingTimer()
+  }
+}
+
+const setVoiceEnabled = async (nextValue) => {
+  if (voiceEnabled.value === nextValue) return
+  error.value = ''
+
+  if (!connected.value) {
+    await connect()
+  }
+
+  if (!connected.value) return
+
+  try {
+    await replaceInputAudioTrack({
+      peerConnection,
+      stream: localStream,
+      useAsr: nextValue,
+    })
+    voiceEnabled.value = nextValue
+  } catch (err) {
+    voiceEnabled.value = false
+    error.value = err?.message || '麦克风切换失败'
+  }
+}
+
+const sendText = () => {
+  const text = input.value.trim()
+  if (!text) return
+
+  if (!dataChannel || dataChannel.readyState !== 'open') {
+    error.value = '数字人还没有连接好，请稍等。'
+    return
+  }
+
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  dataChannel.send(
+    JSON.stringify({
+      header: {
+        name: 'SendHumanText',
+        request_id: requestId,
+      },
+      payload: {
+        request_id: requestId,
+        stream_key: requestId,
+        mode: 'full_text',
+        text,
+        end_of_speech: true,
+      },
+    })
+  )
+  waitingReply.value = true
+  input.value = ''
+  finishStreamMessages()
+}
+
+onMounted(() => {
+  connect()
+})
+
+onActivated(() => {
+  resumeRemoteVideo()
+  scrollMessagesToBottom()
+})
+
+onBeforeUnmount(() => {
+  stopLoadingTimer()
+  finishStreamMessages()
+  closeAvatarWebRtc({ peerConnection, stream: localStream })
 })
 </script>
 
 <template>
   <section class="avatar-stage">
-    <header class="avatar-stage__toolbar">
-      <div>
-        <p>景区数字人</p>
-        <h1>智能讲解与互动咨询</h1>
+    <div class="avatar-stage__video-card">
+      <video ref="remoteVideo" class="avatar-stage__video" autoplay playsinline />
+      <div v-if="showLoading" class="avatar-stage__status">
+        <span class="avatar-stage__loader" />
+        <strong>{{ statusText }}</strong>
+        <p>数字人模型启动比较慢，请保持页面打开。</p>
+        <button v-if="error" type="button" @click="connect">重新连接</button>
       </div>
 
-      <div class="avatar-stage__modes" aria-label="交互方式">
+      <div class="avatar-live-layer">
+        <div class="avatar-live-chat">
+          <div ref="messagesContainer" class="avatar-live-chat__messages">
+            <p v-if="!messages.length" class="avatar-live-chat__empty">
+              可以先问：适合亲子游的路线怎么安排？
+            </p>
+            <p
+              v-for="message in messages"
+              :key="message.id"
+              :class="`avatar-live-chat__message avatar-live-chat__message--${message.role}`"
+            >
+              <strong>{{ message.role === 'user' ? '游客' : '数字人' }}</strong>
+              <span>{{ message.text }}</span>
+            </p>
+          </div>
+
+          <form class="avatar-live-chat__form" @submit.prevent="sendText">
+            <input v-model="input" type="text" autocomplete="off" placeholder="说点什么..." />
+            <button type="submit" :disabled="!input.trim() || !connected">发送</button>
+          </form>
+        </div>
+
         <button
+          class="avatar-asr-button"
+          :class="{ 'avatar-asr-button--on': voiceEnabled }"
           type="button"
-          :class="{ active: interactionMode === 'text' }"
-          @click="interactionMode = 'text'"
+          :aria-pressed="voiceEnabled"
+          :title="voiceEnabled ? '关闭语音输入' : '开启语音输入'"
+          @click="setVoiceEnabled(!voiceEnabled)"
         >
-          文字提问
-        </button>
-        <button
-          type="button"
-          :class="{ active: interactionMode === 'asr' }"
-          @click="interactionMode = 'asr'"
-        >
-          语音 ASR
+          <span class="avatar-asr-button__orb">
+            <i class="avatar-asr-button__wave avatar-asr-button__wave--one" />
+            <i class="avatar-asr-button__wave avatar-asr-button__wave--two" />
+            <i class="avatar-asr-button__dot" />
+          </span>
+          <em>{{ voiceEnabled ? 'ASR 开' : 'ASR 关' }}</em>
         </button>
       </div>
-    </header>
-
-    <div class="avatar-stage__viewport">
-      <iframe
-        class="avatar-stage__iframe"
-        :src="avatarUrl"
-        title="景区数字人"
-        allow="microphone; camera; autoplay; fullscreen; clipboard-read; clipboard-write"
-      />
     </div>
   </section>
 </template>
 
 <style scoped>
 .avatar-stage {
+  position: relative;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  min-height: 100vh;
-  padding: 14px;
-  color: #1e2b24;
-  background:
-    radial-gradient(circle at 18% 10%, rgba(178, 214, 181, 0.34), transparent 30%),
-    linear-gradient(180deg, #f7f6ef 0%, #eef3eb 100%);
+  height: calc(100vh - 92px);
+  min-height: calc(100vh - 92px);
+  padding: 0;
+  overflow: hidden;
+  color: #fff;
 }
 
-.avatar-stage__toolbar {
-  z-index: 1;
+.avatar-stage__video-card {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #0b0f0d;
+}
+
+.avatar-stage__video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center top;
+  background: #0b0f0d;
+}
+
+.avatar-stage__status {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 12px;
-  padding: 12px 14px;
-  border: 1px solid rgba(34, 64, 49, 0.1);
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.68);
-  box-shadow: 0 14px 42px rgba(47, 68, 56, 0.09);
-  backdrop-filter: blur(16px);
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+  padding: 24px;
+  color: #43584c;
+  text-align: center;
+  background: rgba(248, 250, 251, 0.86);
+  backdrop-filter: blur(10px);
 }
 
-.avatar-stage__toolbar p,
-.avatar-stage__toolbar h1 {
+.avatar-stage__status strong {
+  font-size: 17px;
+}
+
+.avatar-stage__status p {
   margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
-.avatar-stage__toolbar p {
-  color: #6e7f70;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-}
-
-.avatar-stage__toolbar h1 {
-  margin-top: 2px;
-  font-size: 20px;
-  line-height: 1.2;
-}
-
-.avatar-stage__modes {
-  display: inline-flex;
-  gap: 6px;
-  padding: 5px;
-  border-radius: 999px;
-  background: rgba(31, 53, 39, 0.08);
-}
-
-.avatar-stage__modes button {
-  min-width: 88px;
-  padding: 9px 12px;
+.avatar-stage__status button {
   border: 0;
   border-radius: 999px;
-  color: #526457;
-  background: transparent;
-  font-size: 14px;
+  padding: 7px 12px;
+  color: #fff;
+  background: #244f3a;
   font-weight: 800;
 }
 
-.avatar-stage__modes button.active {
+.avatar-stage__loader {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #2d704b;
+  animation: blink 1.1s ease-in-out infinite;
+}
+
+.avatar-live-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px var(--shell-padding) calc(env(safe-area-inset-bottom, 0px) + 42px);
+  pointer-events: none;
+}
+
+.avatar-live-chat {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: min(100%, 620px);
+  min-width: 0;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.avatar-live-chat__messages {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  max-height: min(34vh, 260px);
+  gap: 7px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 15px;
+  line-height: 1.45;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.42);
+}
+
+.avatar-live-chat__messages::-webkit-scrollbar {
+  width: 4px;
+}
+
+.avatar-live-chat__messages::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(170, 226, 213, 0.5);
+}
+
+.avatar-live-chat__messages p {
+  margin: 0;
+}
+
+.avatar-live-chat__empty,
+.avatar-live-chat__message {
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 11px;
+  border: 1px solid rgba(215, 244, 236, 0.16);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.24);
+}
+
+.avatar-live-chat__message strong {
+  margin-right: 7px;
+  color: #b9f2df;
+  font-weight: 800;
+}
+
+.avatar-live-chat__message--avatar strong {
+  color: #8ce6d1;
+}
+
+.avatar-live-chat__form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.avatar-live-chat__form input {
+  min-width: 0;
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  outline: none;
   color: #fff;
-  background: #254f3a;
-  box-shadow: 0 8px 18px rgba(37, 79, 58, 0.22);
+  background: rgba(0, 0, 0, 0.28);
+  font: inherit;
 }
 
-.avatar-stage__viewport {
-  min-height: 0;
-  overflow: hidden;
-  border: 1px solid rgba(34, 64, 49, 0.12);
-  border-radius: 28px;
-  background: rgba(255, 255, 255, 0.45);
-  box-shadow: 0 24px 70px rgba(45, 62, 51, 0.14);
+.avatar-live-chat__form input::placeholder {
+  color: rgba(221, 247, 239, 0.68);
 }
 
-.avatar-stage__iframe {
-  display: block;
-  width: 100%;
-  height: 100%;
-  min-height: calc(100vh - 112px);
+.avatar-live-chat__form button {
+  height: 42px;
+  padding: 0 16px;
   border: 0;
+  border-radius: 999px;
+  color: #f7fffb;
+  background: #2d7078;
+  font-weight: 800;
+}
+
+.avatar-live-chat__form button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
+.avatar-asr-button {
+  position: relative;
+  display: grid;
+  width: 66px;
+  min-height: 78px;
+  flex: 0 0 auto;
+  gap: 5px;
+  place-items: center;
+  border: 0;
+  color: rgba(255, 255, 255, 0.82);
   background: transparent;
+  pointer-events: auto;
+}
+
+.avatar-asr-button__orb {
+  position: relative;
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid rgba(215, 244, 236, 0.2);
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.avatar-asr-button__dot {
+  position: relative;
+  z-index: 2;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(221, 247, 239, 0.82);
+}
+
+.avatar-asr-button__wave {
+  position: absolute;
+  inset: 7px;
+  border: 1px solid transparent;
+  border-radius: 50%;
+}
+
+.avatar-asr-button--on {
+  color: #fff;
+}
+
+.avatar-asr-button--on .avatar-asr-button__orb {
+  border-color: rgba(207, 250, 235, 0.5);
+  background: #2d7078;
+}
+
+.avatar-asr-button--on .avatar-asr-button__dot {
+  background: #f7fffb;
+}
+
+.avatar-asr-button--on .avatar-asr-button__wave {
+  border-color: rgba(207, 250, 235, 0.68);
+  animation: wave 1.8s ease-out infinite;
+}
+
+.avatar-asr-button--on .avatar-asr-button__wave--two {
+  animation-delay: 0.48s;
+}
+
+.avatar-asr-button em {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 800;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.38);
+}
+
+@keyframes wave {
+  0% {
+    opacity: 0.72;
+    transform: scale(0.72);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1.9);
+  }
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.82);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 @media (max-width: 720px) {
-  .avatar-stage {
-    padding: 10px;
+  .avatar-live-layer {
+    padding: 12px 12px calc(env(safe-area-inset-bottom, 0px) + 38px);
   }
 
-  .avatar-stage__toolbar {
-    align-items: stretch;
-    flex-direction: column;
+  .avatar-live-chat__messages {
+    max-height: min(30vh, 220px);
+    font-size: 14px;
   }
 
-  .avatar-stage__modes {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
+  .avatar-live-chat__form button {
+    padding: 0 13px;
   }
 }
 </style>

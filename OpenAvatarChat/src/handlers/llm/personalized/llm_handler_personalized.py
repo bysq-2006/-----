@@ -314,7 +314,7 @@ class HandlerPersonalizedLLM(HandlerBase, ABC):
     def _stream_text(self, streamer, output_definition, text: str, finish_stream: bool = False):
         output = DataBundle(output_definition)
         output.set_main_data(text)
-        streamer.stream_data(output, name="personalized_llm", finish_stream=finish_stream)
+        streamer.stream_data(output, finish_stream=finish_stream)
 
     def _finish_stream(self, streamer, output_definition):
         self._stream_text(streamer, output_definition, "", finish_stream=True)

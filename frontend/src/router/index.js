@@ -6,7 +6,7 @@ import ProfileView from '../views/ProfileView.vue'
 
 const routes = [
   { path: '/', redirect: '/avatar' },
-  { path: '/avatar', name: 'avatar', component: HomeView },
+  { path: '/avatar', name: 'avatar', component: HomeView, meta: { keepAlive: true } },
   { path: '/map', name: 'map', component: MapView },
   { path: '/favorites', name: 'favorites', component: FavoritesView },
   { path: '/profile', name: 'profile', component: ProfileView },

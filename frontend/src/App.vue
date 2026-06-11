@@ -1,11 +1,9 @@
 <script setup>
 import { onMounted } from 'vue'
-import { useRoute } from 'vue-router'
 import TabBar from './components/TabBar.vue'
 import { useAuthStore } from './stores/auth'
 
 const authStore = useAuthStore()
-const route = useRoute()
 
 onMounted(() => {
   authStore.loadUser()
@@ -15,8 +13,13 @@ onMounted(() => {
 <template>
   <div class="app-shell">
     <main class="app-shell__page">
-      <RouterView />
+      <RouterView v-slot="{ Component, route }">
+        <KeepAlive>
+          <component :is="Component" v-if="route.meta.keepAlive" />
+        </KeepAlive>
+        <component :is="Component" v-if="!route.meta.keepAlive" />
+      </RouterView>
     </main>
-    <TabBar v-if="route.path !== '/avatar'" />
+    <TabBar />
   </div>
 </template>
