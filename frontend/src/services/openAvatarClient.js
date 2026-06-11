@@ -33,3 +33,19 @@ export const sendWebRtcOffer = (body) =>
     },
     'WebRTC 连接失败'
   )
+
+export const syncOpenAvatarToken = (token) =>
+  requestJson(
+    '/openavatarchat/token',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        token,
+        ttl_seconds: 45,
+      }),
+    },
+    '同步数字人登录状态失败'
+  )

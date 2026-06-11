@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref } from 'vue'
-import { initOpenAvatarConfig } from '../services/openAvatarClient'
+import { initOpenAvatarConfig, syncOpenAvatarToken } from '../services/openAvatarClient'
+import { useAuthStore } from '../stores/auth'
 import {
   closeAvatarWebRtc,
   createLocalStream,
@@ -11,6 +12,7 @@ import {
 
 const remoteVideo = ref(null)
 const messagesContainer = ref(null)
+const authStore = useAuthStore()
 const voiceEnabled = ref(false)
 const input = ref('')
 const status = ref('idle')
@@ -23,6 +25,7 @@ let localStream = null
 let peerConnection = null
 let dataChannel = null
 let loadingTimer = null
+let tokenSyncTimer = null
 const activeStreamMessageIds = {
   user: '',
   avatar: '',
@@ -49,6 +52,22 @@ const startLoadingTimer = () => {
 const stopLoadingTimer = () => {
   window.clearInterval(loadingTimer)
   loadingTimer = null
+}
+
+const syncToken = () => {
+  if (!authStore.token) return
+  syncOpenAvatarToken(authStore.token).catch(() => {})
+}
+
+const startTokenSync = () => {
+  syncToken()
+  window.clearInterval(tokenSyncTimer)
+  tokenSyncTimer = window.setInterval(syncToken, 20000)
+}
+
+const stopTokenSync = () => {
+  window.clearInterval(tokenSyncTimer)
+  tokenSyncTimer = null
 }
 
 const scrollMessagesToBottom = () => {
@@ -225,6 +244,7 @@ const sendText = () => {
 }
 
 onMounted(() => {
+  startTokenSync()
   connect()
 })
 
@@ -235,6 +255,7 @@ onActivated(() => {
 
 onBeforeUnmount(() => {
   stopLoadingTimer()
+  stopTokenSync()
   finishStreamMessages()
   closeAvatarWebRtc({ peerConnection, stream: localStream })
 })

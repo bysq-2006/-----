@@ -8,9 +8,11 @@ import sys
 import gradio
 import uvicorn
 from fastapi import FastAPI
+from pydantic import BaseModel
 from loguru import logger
 
 from engine_utils.directory_info import DirectoryInfo
+from service.runtime_token_store import save_token
 from service.service_utils.logger_utils import config_loggers
 from service.service_utils.service_config_loader import load_configs
 from service.service_utils.ssl_helpers import create_ssl_context
@@ -48,6 +50,11 @@ class OpenAvatarChatWebServer(uvicorn.Server):
         await super().shutdown(sockets)
 
 
+class RuntimeTokenPayload(BaseModel):
+    token: str
+    ttl_seconds: int = 60
+
+
 def setup_demo():
     """设置 FastAPI 应用和 Gradio 界面"""
     app = FastAPI(docs_url=None, redoc_url=None)
@@ -69,6 +76,12 @@ def setup_demo():
                 pass
 
     gradio.mount_gradio_app(app, gradio_block, "/gradio")
+
+    @app.post("/openavatarchat/token")
+    async def update_runtime_token(payload: RuntimeTokenPayload):
+        save_token(payload.token, payload.ttl_seconds)
+        return {"status": "ok"}
+
     return app, gradio_block, rtc_container
 
 

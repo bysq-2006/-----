@@ -67,3 +67,4 @@ async def me(user=Depends(current_user)):
 # uvicorn backend.main:app --reload
 
 # pip install -r backend\requirements.txt
+# uvicorn backend.main:app --reload --log-level debug --access-log

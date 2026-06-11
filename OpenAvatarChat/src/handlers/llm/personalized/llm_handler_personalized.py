@@ -1,7 +1,6 @@
 import json
 import os
 import re
-import time
 import urllib.error
 import urllib.request
 from abc import ABC
@@ -23,6 +22,7 @@ from chat_engine.data_models.chat_stream import StreamKey
 from chat_engine.data_models.chat_stream_config import ChatStreamConfig
 from chat_engine.data_models.runtime_data.data_bundle import DataBundle, DataBundleDefinition, DataBundleEntry
 from handlers.llm.openai_compatible.chat_history_manager import ChatHistory, HistoryMessage
+from service.runtime_token_store import get_auth_headers
 
 
 def _expand(value: Optional[str]) -> str:
@@ -50,79 +50,16 @@ class PersonalizedLLMConfig(HandlerBaseConfigModel, BaseModel):
     api_url: str = Field(default="https://dashscope.aliyuncs.com/compatible-mode/v1")
     enable_video_input: bool = Field(default=False)
     history_length: int = Field(default=20)
+    use_local_history: bool = Field(default=True)
 
-    login_url: str = Field(default="")
-    username: str = Field(default="")
-    password: str = Field(default="", repr=False)
-    username_field: str = Field(default="username")
-    password_field: str = Field(default="password")
-    token_json_path: str = Field(default="token")
-    token_expires_in_json_path: str = Field(default="expires_in")
-    token_ttl_seconds: int = Field(default=3600)
     token_header_name: str = Field(default="Authorization")
     token_header_template: str = Field(default="Bearer {token}")
 
     backend_chat_url: str = Field(default="")
+    backend_request_format: str = Field(default="query")
     backend_query_field: str = Field(default="query")
     backend_response_json_path: str = Field(default="answer")
     request_timeout_seconds: float = Field(default=10.0)
-
-
-class TokenManager:
-    def __init__(self, config: PersonalizedLLMConfig):
-        self.config = config
-        self.token = ""
-        self.expires_at = 0.0
-
-    def get_token(self, force_refresh: bool = False) -> str:
-        if not self.config.login_url:
-            return ""
-        if not force_refresh and self.token and time.time() < self.expires_at - 30:
-            return self.token
-
-        payload = {
-            self.config.username_field: _expand(self.config.username),
-            self.config.password_field: _expand(self.config.password),
-        }
-        response = self._post_json(_expand(self.config.login_url), payload, {})
-        token = _get_json_path(response, self.config.token_json_path)
-        if not token:
-            raise ValueError(f"Login succeeded but token was not found at '{self.config.token_json_path}'")
-
-        expires_in = _get_json_path(response, self.config.token_expires_in_json_path, self.config.token_ttl_seconds)
-        try:
-            expires_in = int(expires_in)
-        except (TypeError, ValueError):
-            expires_in = self.config.token_ttl_seconds
-
-        self.token = str(token)
-        self.expires_at = time.time() + max(60, expires_in)
-        logger.info("PersonalizedLLM login succeeded and token was cached.")
-        return self.token
-
-    def auth_headers(self, force_refresh: bool = False) -> Dict[str, str]:
-        token = self.get_token(force_refresh=force_refresh)
-        if not token:
-            return {}
-        return {
-            self.config.token_header_name: self.config.token_header_template.format(token=token)
-        }
-
-    def _post_json(self, url: str, payload: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(
-            url=url,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                **headers,
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=self.config.request_timeout_seconds) as response:
-            raw = response.read().decode("utf-8")
-        return json.loads(raw) if raw else {}
 
 
 class PersonalizedLLMContext(HandlerContext):
@@ -137,7 +74,6 @@ class PersonalizedLLMContext(HandlerContext):
         self.current_image = None
         self.history = None
         self.enable_video_input = False
-        self.token_manager: Optional[TokenManager] = None
         self.active_stream_keys: Set[StreamKey] = set()
 
 
@@ -179,7 +115,6 @@ class HandlerPersonalizedLLM(HandlerBase, ABC):
         context.system_prompt = {"role": "system", "content": handler_config.system_prompt}
         context.enable_video_input = handler_config.enable_video_input
         context.history = ChatHistory(history_length=handler_config.history_length)
-        context.token_manager = TokenManager(handler_config)
         if not handler_config.backend_chat_url:
             context.client = OpenAI(
                 api_key=_expand(handler_config.api_key),
@@ -243,8 +178,9 @@ class HandlerPersonalizedLLM(HandlerBase, ABC):
             else:
                 self._call_openai_compatible(context, chat_text, streamer, output_definition, stream_key)
 
-            context.history.add_message(HistoryMessage(role="human", content=chat_text))
-            context.history.add_message(HistoryMessage(role="avatar", content=context.output_texts))
+            if config.use_local_history:
+                context.history.add_message(HistoryMessage(role="human", content=chat_text))
+                context.history.add_message(HistoryMessage(role="avatar", content=context.output_texts))
         except Exception as e:
             logger.error(e)
             self._stream_text(streamer, output_definition, self._format_error(e), finish_stream=True)
@@ -258,28 +194,75 @@ class HandlerPersonalizedLLM(HandlerBase, ABC):
 
     def _call_backend_chat(self, context: PersonalizedLLMContext, chat_text: str) -> str:
         config = cast(PersonalizedLLMConfig, context.config)
-        history_messages = context.history.generate_next_messages(
-            chat_text,
-            [context.current_image] if context.current_image is not None else [],
-        )
-        payload = {
-            config.backend_query_field: chat_text,
-            "messages": [context.system_prompt] + history_messages,
-            "session_id": context.session_id,
-        }
-        headers = context.token_manager.auth_headers() if context.token_manager else {}
+        history_messages = self._history_messages(context, chat_text, config.use_local_history)
+        messages = [context.system_prompt] + history_messages
+        if config.backend_request_format == "openai_compatible":
+            payload = {
+                "model": context.model_name,
+                "messages": messages,
+                "stream": False,
+            }
+        else:
+            payload = {
+                config.backend_query_field: chat_text,
+                "messages": messages,
+                "session_id": context.session_id,
+            }
+        headers = get_auth_headers(config.token_header_name, config.token_header_template)
+        if not headers:
+            return "无token"
+
         try:
-            response = context.token_manager._post_json(_expand(config.backend_chat_url), payload, headers)
-        except urllib.error.HTTPError as e:
-            if e.code not in (401, 403) or context.token_manager is None:
-                raise
-            headers = context.token_manager.auth_headers(force_refresh=True)
-            response = context.token_manager._post_json(_expand(config.backend_chat_url), payload, headers)
+            response = self._post_json(_expand(config.backend_chat_url), payload, headers, config.request_timeout_seconds)
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="ignore")
+            logger.error(f"PersonalizedLLM backend HTTP {error.code}: {detail}")
+            raise
+
+        if config.backend_request_format == "openai_compatible":
+            choices = response.get("choices") if isinstance(response, dict) else []
+            message = choices[0].get("message") if choices else {}
+            return str((message or {}).get("content") or "")
 
         answer = _get_json_path(response, config.backend_response_json_path)
         if answer is None:
             answer = response.get("data") if isinstance(response, dict) else response
         return str(answer or "")
+
+    def _history_messages(
+        self,
+        context: PersonalizedLLMContext,
+        chat_text: str,
+        use_local_history: bool,
+    ) -> list:
+        if use_local_history:
+            return context.history.generate_next_messages(
+                chat_text,
+                [context.current_image] if context.current_image is not None else [],
+            )
+        return [{"role": "human", "content": chat_text}]
+
+    def _post_json(
+        self,
+        url: str,
+        payload: Dict[str, Any],
+        headers: Dict[str, str],
+        timeout_seconds: float,
+    ) -> Dict[str, Any]:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            url=url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                **headers,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            raw = response.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
 
     def _call_openai_compatible(
         self,
@@ -289,10 +272,7 @@ class HandlerPersonalizedLLM(HandlerBase, ABC):
         output_definition,
         stream_key: str,
     ):
-        current_content = context.history.generate_next_messages(
-            chat_text,
-            [context.current_image] if context.current_image is not None else [],
-        )
+        current_content = self._history_messages(context, chat_text, True)
         completion = context.client.chat.completions.create(
             model=context.model_name,
             messages=[context.system_prompt] + current_content,
