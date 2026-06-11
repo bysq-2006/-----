@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from abc import ABC
@@ -75,6 +76,7 @@ class PersonalizedLLMContext(HandlerContext):
         self.history = None
         self.enable_video_input = False
         self.active_stream_keys: Set[StreamKey] = set()
+        self.stream_start_times: Dict[str, float] = {}
 
 
 class HandlerPersonalizedLLM(HandlerBase, ABC):
@@ -165,16 +167,18 @@ class HandlerPersonalizedLLM(HandlerBase, ABC):
 
         logger.info(f"PersonalizedLLM input {chat_text}")
         context.active_stream_keys.add(stream_key)
+        context.stream_start_times[stream_key] = time.perf_counter()
         context.input_texts = ""
         context.output_texts = ""
         try:
             if config.backend_chat_url:
-                answer = self._call_backend_chat(context, chat_text)
-                for output_text in self._chunk_text(answer):
-                    if stream_key not in context.active_stream_keys:
-                        return
-                    context.output_texts += output_text
-                    self._stream_text(streamer, output_definition, output_text)
+                self._call_backend_chat(
+                    context,
+                    chat_text,
+                    streamer,
+                    output_definition,
+                    stream_key,
+                )
             else:
                 self._call_openai_compatible(context, chat_text, streamer, output_definition, stream_key)
 
@@ -192,7 +196,14 @@ class HandlerPersonalizedLLM(HandlerBase, ABC):
 
         self._finish_stream(streamer, output_definition)
 
-    def _call_backend_chat(self, context: PersonalizedLLMContext, chat_text: str) -> str:
+    def _call_backend_chat(
+        self,
+        context: PersonalizedLLMContext,
+        chat_text: str,
+        streamer,
+        output_definition,
+        stream_key: str,
+    ):
         config = cast(PersonalizedLLMConfig, context.config)
         history_messages = self._history_messages(context, chat_text, config.use_local_history)
         messages = [context.system_prompt] + history_messages
@@ -210,9 +221,25 @@ class HandlerPersonalizedLLM(HandlerBase, ABC):
             }
         headers = get_auth_headers(config.token_header_name, config.token_header_template)
         if not headers:
-            return "无token"
+            self._stream_backend_text(context, streamer, output_definition, "无token")
+            return
 
         try:
+            logger.info(f"PersonalizedLLM backend request start stream_key={stream_key}")
+            if config.backend_request_format == "openai_compatible":
+                payload["stream"] = True
+                self._stream_openai_compatible_backend(
+                    context,
+                    _expand(config.backend_chat_url),
+                    payload,
+                    headers,
+                    config.request_timeout_seconds,
+                    streamer,
+                    output_definition,
+                    stream_key,
+                )
+                return
+
             response = self._post_json(_expand(config.backend_chat_url), payload, headers, config.request_timeout_seconds)
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="ignore")
@@ -222,12 +249,71 @@ class HandlerPersonalizedLLM(HandlerBase, ABC):
         if config.backend_request_format == "openai_compatible":
             choices = response.get("choices") if isinstance(response, dict) else []
             message = choices[0].get("message") if choices else {}
-            return str((message or {}).get("content") or "")
+            self._stream_backend_text(context, streamer, output_definition, str((message or {}).get("content") or ""))
+            return
 
         answer = _get_json_path(response, config.backend_response_json_path)
         if answer is None:
             answer = response.get("data") if isinstance(response, dict) else response
-        return str(answer or "")
+        for output_text in self._chunk_text(str(answer or "")):
+            if stream_key not in context.active_stream_keys:
+                return
+            self._stream_backend_text(context, streamer, output_definition, output_text)
+
+    def _stream_backend_text(self, context, streamer, output_definition, output_text: str):
+        if not output_text:
+            return
+        context.output_texts += output_text
+        self._stream_text(streamer, output_definition, output_text)
+
+    def _stream_openai_compatible_backend(
+        self,
+        context,
+        url: str,
+        payload: Dict[str, Any],
+        headers: Dict[str, str],
+        timeout_seconds: float,
+        streamer,
+        output_definition,
+        stream_key: str,
+    ):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            url=url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+                **headers,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            first_chunk_logged = False
+            for raw_line in response:
+                if stream_key not in context.active_stream_keys:
+                    return
+                line = raw_line.decode("utf-8", errors="ignore").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    delta = (json.loads(data).get("choices") or [{}])[0].get("delta") or {}
+                except json.JSONDecodeError:
+                    continue
+                output_text = str(delta.get("content") or "")
+                if output_text and not first_chunk_logged:
+                    first_chunk_logged = True
+                    start_time = context.stream_start_times.get(stream_key)
+                    if start_time is not None:
+                        logger.info(
+                            f"PersonalizedLLM first backend chunk stream_key={stream_key} +{time.perf_counter() - start_time:.3f}s"
+                        )
+                    else:
+                        logger.info(f"PersonalizedLLM first backend chunk stream_key={stream_key}")
+                self._stream_backend_text(context, streamer, output_definition, output_text)
 
     def _history_messages(
         self,
@@ -240,7 +326,7 @@ class HandlerPersonalizedLLM(HandlerBase, ABC):
                 chat_text,
                 [context.current_image] if context.current_image is not None else [],
             )
-        return [{"role": "human", "content": chat_text}]
+        return [{"role": "user", "content": chat_text}]
 
     def _post_json(
         self,
@@ -279,6 +365,7 @@ class HandlerPersonalizedLLM(HandlerBase, ABC):
             stream=True,
             stream_options={"include_usage": True},
         )
+        first_chunk_logged = False
         for chunk in completion:
             if stream_key not in context.active_stream_keys:
                 try:
@@ -288,6 +375,15 @@ class HandlerPersonalizedLLM(HandlerBase, ABC):
                 return
             if chunk and chunk.choices and chunk.choices[0].delta.content:
                 output_text = chunk.choices[0].delta.content
+                if not first_chunk_logged:
+                    first_chunk_logged = True
+                    start_time = context.stream_start_times.get(stream_key)
+                    if start_time is not None:
+                        logger.info(
+                            f"PersonalizedLLM first openai chunk stream_key={stream_key} +{time.perf_counter() - start_time:.3f}s"
+                        )
+                    else:
+                        logger.info(f"PersonalizedLLM first openai chunk stream_key={stream_key}")
                 context.output_texts += output_text
                 self._stream_text(streamer, output_definition, output_text)
 

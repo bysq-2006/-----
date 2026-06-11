@@ -42,6 +42,9 @@ class BailianTTSSession:
     output_stream_key: Optional[StreamKey] = None
     synthesizer: Optional[SpeechSynthesizer] = None
     cancelled: bool = False
+    created_at: float = field(default_factory=time.perf_counter)
+    first_text_at: Optional[float] = None
+    first_audio_at: Optional[float] = None
 
     def reset(self):
         self.cancelled = True
@@ -79,6 +82,7 @@ class TTSContext(HandlerContext):
 
             session = self._create_session(input_stream)
             self.api_links[input_stream_key] = session
+            logger.info(f"TTS: session created stream={input_stream_key}")
 
             # 为新的输入流创建输出流，建立 1:1 的显式关联
             streamer = self.data_submitter.get_streamer(ChatDataType.AVATAR_AUDIO)
@@ -97,6 +101,11 @@ class TTSContext(HandlerContext):
 
         try:
             if not text_end:
+                if session.first_text_at is None:
+                    session.first_text_at = time.perf_counter()
+                    logger.info(
+                        f"TTS: first text chunk stream={input_stream_key} +{session.first_text_at - session.created_at:.3f}s"
+                    )
                 if session.synthesizer is None:
                     streamer = self.data_submitter.get_streamer(ChatDataType.AVATAR_AUDIO)
                     callback = CosyvoiceCallBack(
@@ -106,6 +115,7 @@ class TTSContext(HandlerContext):
                     session.synthesizer = SpeechSynthesizer(
                         model=handler.model_name, voice=handler.voice,
                         callback=callback, format=AudioFormat.PCM_24000HZ_MONO_16BIT)
+                    logger.info(f"TTS: synthesizer created stream={input_stream_key}")
                 logger.info(f'streaming_call {text}')
                 session.synthesizer.streaming_call(text)
             else:
@@ -269,6 +279,11 @@ class CosyvoiceCallBack(ResultCallback):
             return
         self.temp_bytes += data
         if len(self.temp_bytes) > 24000:
+            if self.session.first_audio_at is None:
+                self.session.first_audio_at = time.perf_counter()
+                logger.info(
+                    f"TTS: first audio chunk stream={self.session.input_stream_id.key} +{self.session.first_audio_at - self.session.created_at:.3f}s"
+                )
             output_audio = np.array(np.frombuffer(self.temp_bytes, dtype=np.int16)).astype(
                 np.float32) / 32767
             output_audio = output_audio[np.newaxis, ...]
@@ -283,6 +298,11 @@ class CosyvoiceCallBack(ResultCallback):
             logger.info('TTS: Synthesis cancelled, skipping output in on_complete')
             return
         if len(self.temp_bytes) > 0:
+            if self.session.first_audio_at is None:
+                self.session.first_audio_at = time.perf_counter()
+                logger.info(
+                    f"TTS: first audio chunk stream={self.session.input_stream_id.key} +{self.session.first_audio_at - self.session.created_at:.3f}s"
+                )
             output_audio = np.array(np.frombuffer(self.temp_bytes, dtype=np.int16)).astype(np.float32) / 32767
             output_audio = output_audio[np.newaxis, ...]
             output = DataBundle(self.output_definition)
@@ -290,7 +310,9 @@ class CosyvoiceCallBack(ResultCallback):
             self.context.submit_data(output)
             self.temp_bytes = b''
         self._submit_end_frame()
-        logger.info('TTS: Synthesis complete')
+        logger.info(
+            f"TTS: Synthesis complete stream={self.session.input_stream_id.key} +{time.perf_counter() - self.session.created_at:.3f}s"
+        )
 
     def on_error(self, message) -> None:
         if self.is_cancelled:

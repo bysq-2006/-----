@@ -2,6 +2,7 @@
 
 import os
 import re
+import time
 from typing import Dict, Optional, Set, cast
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -24,7 +25,7 @@ from chat_engine.data_models.chat_stream_config import ChatStreamConfig
 class LLMConfig(HandlerBaseConfigModel, BaseModel):
     model_name: str = Field(default="qwen-plus")
     system_prompt: str = Field(default="请你扮演一个 AI 助手，用简短的对话来回答用户的问题，并在对话内容中加入合适的标点符号，不需要加入标点符号相关的内容")
-    api_key: str = Field(default=os.getenv("DASHSCOPE_API_KEY"))
+    api_key: str = Field(default=os.getenv("DASHSCOPE_API_KEY"), repr=False)
     api_url: str = Field(default=None)
     enable_video_input: bool = Field(default=False)
     history_length: int = Field(default=20)
@@ -152,6 +153,8 @@ class HandlerLLM(HandlerBase, ABC):
         if stream_key:
             context.active_stream_keys.add(stream_key)
         try:
+            request_started_at = time.perf_counter()
+            logger.info(f"LLMOpenAICompatible request start stream_key={stream_key}")
             completion = context.client.chat.completions.create(
                 model=context.model_name,  # 此处以qwen-plus为例，可按需更换模型名称。模型列表：https://help.aliyun.com/zh/model-studio/getting-started/models
                 messages=[
@@ -164,6 +167,7 @@ class HandlerLLM(HandlerBase, ABC):
             context.input_texts = ''
             context.output_texts = ''
             cancelled = False
+            first_content_logged = False
             for chunk in completion:
                 if stream_key and stream_key not in context.active_stream_keys:
                         cancelled = True
@@ -174,6 +178,12 @@ class HandlerLLM(HandlerBase, ABC):
                         break
                 if (chunk and chunk.choices and chunk.choices[0] and chunk.choices[0].delta.content):
                     output_text = chunk.choices[0].delta.content
+                    if not first_content_logged:
+                        first_content_logged = True
+                        logger.info(
+                            f"LLMOpenAICompatible first content chunk stream_key={stream_key} "
+                            f"+{time.perf_counter() - request_started_at:.3f}s"
+                        )
                     context.output_texts += output_text
                     logger.info(output_text)
                     output = DataBundle(output_definition)

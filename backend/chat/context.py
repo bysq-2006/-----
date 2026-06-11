@@ -9,9 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.database import AIConversationMessage, AIUserMemory, User
 
 
-RECENT_MESSAGE_LIMIT = 10
-SUMMARY_TRIGGER_COUNT = 40
-SUMMARY_BATCH_COUNT = 30
+SUMMARY_TRIGGER_COUNT = 20
+SUMMARY_BATCH_COUNT = 14
 SUMMARY_SYSTEM_PROMPT = (
     "你负责把用户和景区数字人 AI 的历史对话压缩成长期可用的上下文摘要。"
     "请保留用户明确表达的需求、偏好、已确认信息、未完成事项和 AI 已给出的关键建议。"
@@ -66,10 +65,9 @@ async def build_messages_with_backend_context(
             AIConversationMessage.user_id == user.id,
             AIConversationMessage.is_summarized.is_(False),
         )
-        .order_by(AIConversationMessage.created_at.desc(), AIConversationMessage.id.desc())
-        .limit(RECENT_MESSAGE_LIMIT)
+        .order_by(AIConversationMessage.created_at.asc(), AIConversationMessage.id.asc())
     )
-    recent_messages = list(reversed(result.scalars().all()))
+    recent_messages = result.scalars().all()
 
     messages = memory_context_messages(memory)
     messages.extend(openai_message(item) for item in recent_messages)

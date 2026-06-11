@@ -23,7 +23,7 @@ load_dotenv()
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
 router = APIRouter()
 
@@ -137,6 +137,7 @@ async def chat_completions(
     payload = request.model_dump(exclude_none=True)
     payload["messages"] = await build_messages_with_backend_context(session, user, current_message)
     payload["model"] = payload.get("model") or DEEPSEEK_MODEL
+    payload["thinking"] = {"type": "disabled"}
 
     url, headers = deepseek_target()
 
