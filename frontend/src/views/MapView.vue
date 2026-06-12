@@ -30,6 +30,34 @@ async function initMap() {
       title: '灵山胜境 - 灵山大佛',
     })
   )
+
+  const regionPath = [
+    [120.0949, 31.4311],
+    [120.0962, 31.4320],
+    [120.0981, 31.4314],
+    [120.0983, 31.4302],
+    [120.0970, 31.4294],
+    [120.0957, 31.4298],
+  ]
+
+  const region = new AMap.Polygon({
+    path: regionPath,
+    strokeColor: '#2d8762',
+    strokeWeight: 3,
+    fillColor: '#2d8762',
+    fillOpacity: 0.18,
+  })
+
+  const infoWindow = new AMap.InfoWindow({
+    content: '<div style="padding:8px 10px;">这是一个示例不规则区域</div>',
+    offset: new AMap.Pixel(0, -24),
+  })
+
+  region.on('click', (e) => {
+    infoWindow.open(mapInstance, e.lnglat)
+  })
+
+  mapInstance.add(region)
 }
 
 onMounted(initMap)

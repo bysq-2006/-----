@@ -1,0 +1,913 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>地图区域标注工具</title>
+    <style>
+      :root {
+        --bg: #07130f;
+        --panel: rgba(10, 22, 17, 0.92);
+        --line: rgba(146, 196, 171, 0.18);
+        --text: #f0fbf5;
+        --muted: #9ab7aa;
+        --accent: #4fca8d;
+        --accent-strong: #2fa16e;
+        --warning: #f59e0b;
+        --danger: #e96a6a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        background: radial-gradient(circle at top, #10251c, var(--bg) 60%);
+        color: var(--text);
+        overflow: hidden;
+      }
+
+      .app {
+        display: grid;
+        grid-template-rows: 58px 1fr;
+        width: 100%;
+        height: 100%;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(7, 16, 12, 0.96);
+        backdrop-filter: blur(8px);
+      }
+
+      .title {
+        display: grid;
+        gap: 3px;
+      }
+
+      .title h1 {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      .title p {
+        margin: 0;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .status {
+        padding: 8px 12px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.04);
+        color: #c7f2d8;
+        font-size: 13px;
+        white-space: nowrap;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 380px;
+        gap: 12px;
+        min-height: 0;
+        padding: 12px;
+      }
+
+      .map-shell,
+      .side {
+        min-height: 0;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        overflow: hidden;
+        background: var(--panel);
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18);
+      }
+
+      .map-shell {
+        position: relative;
+      }
+
+      #map {
+        width: 100%;
+        height: 100%;
+      }
+
+      .side {
+        display: grid;
+        grid-template-rows: auto auto 1fr auto;
+      }
+
+      .side-head {
+        padding: 14px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .side-head h2 {
+        margin: 0;
+        font-size: 15px;
+      }
+
+      .side-head p {
+        margin: 6px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.7;
+      }
+
+      .fields {
+        display: grid;
+        gap: 10px;
+        padding: 14px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .field {
+        display: grid;
+        gap: 6px;
+      }
+
+      .field label {
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .field input,
+      .field textarea {
+        width: 100%;
+        border: 1px solid rgba(146, 196, 171, 0.18);
+        border-radius: 12px;
+        padding: 10px 12px;
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text);
+        outline: none;
+        font: inherit;
+      }
+
+      .field textarea {
+        resize: vertical;
+        min-height: 82px;
+        max-height: 160px;
+      }
+
+      .field input:focus,
+      .field textarea:focus {
+        border-color: rgba(79, 202, 141, 0.75);
+      }
+
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        padding: 0 14px 14px;
+      }
+
+      .btn {
+        border: 0;
+        border-radius: 12px;
+        padding: 11px 12px;
+        color: #07130f;
+        background: linear-gradient(180deg, #60d89d, var(--accent-strong));
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+      }
+
+      .btn.secondary {
+        color: var(--text);
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.06);
+      }
+
+      .btn.is-drawing {
+        color: #fff7d8;
+        background: linear-gradient(180deg, #ffcf6a, var(--warning));
+      }
+
+      .output {
+        margin: 0;
+        padding: 14px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+        font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace;
+        font-size: 13px;
+        line-height: 1.65;
+        color: #dcf7e8;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .saved {
+        display: grid;
+        grid-template-rows: auto 1fr;
+        min-height: 0;
+      }
+
+      .saved-head {
+        padding: 14px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .saved-head h3 {
+        margin: 0;
+        font-size: 14px;
+      }
+
+      .saved-head p {
+        margin: 6px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .saved-list {
+        margin: 0;
+        padding: 10px 14px 14px;
+        overflow: auto;
+        display: grid;
+        gap: 10px;
+      }
+
+      .saved-item {
+        padding: 12px;
+        border: 1px solid rgba(146, 196, 171, 0.16);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      .saved-item h4 {
+        margin: 0;
+        font-size: 14px;
+      }
+
+      .saved-item p {
+        margin: 6px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .saved-item__actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .saved-item__actions button {
+        flex: 1;
+        border: 1px solid rgba(146, 196, 171, 0.16);
+        border-radius: 10px;
+        padding: 7px 10px;
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text);
+        cursor: pointer;
+        font: inherit;
+        font-size: 12px;
+      }
+
+      .drop-hint {
+        display: none;
+        position: absolute;
+        inset: 0;
+        z-index: 20;
+        align-items: center;
+        justify-content: center;
+        border: 2px dashed rgba(79, 202, 141, 0.75);
+        background: rgba(7, 19, 15, 0.6);
+        color: #dff9ea;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        backdrop-filter: blur(3px);
+      }
+
+      .drop-hint.show {
+        display: flex;
+      }
+
+      .region-label {
+        max-width: 190px;
+        padding: 6px 8px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 10px;
+        background: rgba(8, 19, 14, 0.78);
+        color: #fff;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+      }
+
+      .region-label strong {
+        display: block;
+        margin-bottom: 2px;
+        font-size: 12px;
+        color: #fff7d8;
+      }
+
+      .region-label span {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        font-size: 11px;
+        line-height: 1.35;
+        color: #d7efe1;
+      }
+
+      @media (max-width: 1024px) {
+        body {
+          overflow: auto;
+        }
+
+        .app {
+          min-height: 100%;
+          height: auto;
+        }
+
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+
+        .map-shell {
+          min-height: 64vh;
+        }
+
+        .side {
+          min-height: 420px;
+        }
+      }
+    </style>
+    <script>
+      window._AMapSecurityConfig = {
+        securityJsCode: 'edd437273209149aebb598f4dbf7d00c',
+      }
+    </script>
+    <script src="https://webapi.amap.com/maps?v=2.0&key=97b523f9ca6d2859e0ce7913c2190bd0"></script>
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="title">
+          <h1>地图区域标注工具</h1>
+          <p>点击地图添加顶点，点够 3 个后再按按钮结束框选。右键可删除当前框选区域。</p>
+        </div>
+        <div id="status" class="status">正在加载地图...</div>
+      </header>
+
+      <main class="workspace">
+        <section class="map-shell" id="mapShell">
+          <div id="map"></div>
+          <div id="dropHint" class="drop-hint">松开鼠标导入 JSON 文件</div>
+        </section>
+
+        <aside class="side">
+          <div class="side-head">
+            <h2>区域资料</h2>
+            <p>先框选，再填写名称和简介，最后保存或导出 JSON。导入文件后会自动重建所有区域。</p>
+          </div>
+
+          <div class="fields">
+            <div class="field">
+              <label for="regionName">区域名称</label>
+              <input id="regionName" type="text" placeholder="例如：如愿食令" />
+            </div>
+            <div class="field">
+              <label for="regionDesc">简介</label>
+              <textarea id="regionDesc" placeholder="例如：适合休息和用餐的区域"></textarea>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button id="startDraw" class="btn">
+              <span id="drawIcon">◯</span>
+              <span id="drawText">开始框选</span>
+            </button>
+            <button id="saveCurrent" class="btn secondary">保存当前</button>
+            <button id="exportJson" class="btn secondary">生成文件</button>
+            <button id="importJson" class="btn secondary">读取文件</button>
+          </div>
+
+          <pre id="output" class="output">[]</pre>
+
+          <div class="saved">
+            <div class="saved-head">
+              <h3>已保存区域</h3>
+              <p>点击“定位”可以把地图移到该区域中心，点击“删除”只会删这一条。</p>
+            </div>
+            <div id="savedList" class="saved-list"></div>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <input id="fileInput" type="file" accept=".json,application/json" hidden />
+
+    <script>
+      const MAP_CENTER = [120.096477, 31.430194]
+      const STORAGE_KEY = 'map-annotator-regions'
+
+      const statusEl = document.getElementById('status')
+      const outputEl = document.getElementById('output')
+      const startDrawButton = document.getElementById('startDraw')
+      const drawIconEl = document.getElementById('drawIcon')
+      const drawTextEl = document.getElementById('drawText')
+      const saveCurrentButton = document.getElementById('saveCurrent')
+      const exportJsonButton = document.getElementById('exportJson')
+      const importJsonButton = document.getElementById('importJson')
+      const regionNameInput = document.getElementById('regionName')
+      const regionDescInput = document.getElementById('regionDesc')
+      const fileInput = document.getElementById('fileInput')
+      const mapShell = document.getElementById('mapShell')
+      const savedList = document.getElementById('savedList')
+      const dropHint = document.getElementById('dropHint')
+
+      let map = null
+      let mapReady = false
+      let isDrawing = false
+      let draftPoints = []
+      let draftMarkers = []
+      let draftPolygon = null
+      let activeRegion = null
+      let editingRegionId = null
+      let savedRegions = []
+      let regionLayers = []
+      let infoWindow = null
+
+      const setStatus = (text) => {
+        statusEl.textContent = text
+      }
+
+      const setOutput = (value) => {
+        outputEl.textContent = JSON.stringify(value, null, 2)
+      }
+
+      const saveLocal = () => {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(savedRegions))
+      }
+
+      const loadLocal = () => {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY)
+          if (!raw) return
+          const parsed = JSON.parse(raw)
+          if (Array.isArray(parsed)) {
+            savedRegions = normalizeRegions(parsed)
+          }
+        } catch {
+          savedRegions = []
+        }
+      }
+
+      const normalizeRegions = (input) =>
+        input
+          .map((item, index) => {
+            const path = Array.isArray(item.path) ? item.path : []
+            if (path.length < 3) return null
+
+            const normalizedPath = path
+              .map((point) => {
+                const lng = Number(point[0])
+                const lat = Number(point[1])
+                if (Number.isNaN(lng) || Number.isNaN(lat)) return null
+                return [Number(lng.toFixed(6)), Number(lat.toFixed(6))]
+              })
+              .filter(Boolean)
+
+            if (normalizedPath.length < 3) return null
+
+            return {
+              id: item.id || `${Date.now()}-${index}`,
+              name: item.name || `区域 ${index + 1}`,
+              description: item.description || '',
+              path: normalizedPath,
+            }
+          })
+          .filter(Boolean)
+
+      const getPlainPath = (path) =>
+        Array.from(path || [], (point) => [
+          Number((point.lng ?? point.getLng()).toFixed(6)),
+          Number((point.lat ?? point.getLat()).toFixed(6)),
+        ])
+
+      const centroid = (path) => {
+        if (!path.length) return MAP_CENTER
+        const sums = path.reduce(
+          (acc, [lng, lat]) => {
+            acc.lng += lng
+            acc.lat += lat
+            return acc
+          },
+          { lng: 0, lat: 0 }
+        )
+        return [sums.lng / path.length, sums.lat / path.length]
+      }
+
+      const escapeHtml = (text) =>
+        String(text)
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;')
+
+      const clearDraft = () => {
+        draftPoints = []
+        draftMarkers.forEach((marker) => marker.setMap(null))
+        draftMarkers = []
+        if (draftPolygon) {
+          draftPolygon.setMap(null)
+          draftPolygon = null
+        }
+      }
+
+      const clearRegionForm = () => {
+        regionNameInput.value = ''
+        regionDescInput.value = ''
+      }
+
+      const loadRegionIntoForm = (region) => {
+        editingRegionId = region.id || null
+        activeRegion = {
+          id: region.id || null,
+          name: region.name || '',
+          description: region.description || '',
+          path: region.path || [],
+        }
+        regionNameInput.value = activeRegion.name
+        regionDescInput.value = activeRegion.description
+        setStatus(`已载入「${activeRegion.name || '未命名区域'}」，可以直接修改`)
+      }
+
+      const setDrawButtonState = (active) => {
+        if (active) {
+          startDrawButton.classList.add('is-drawing')
+          drawIconEl.textContent = '■'
+          drawTextEl.textContent = '结束框选'
+        } else {
+          startDrawButton.classList.remove('is-drawing')
+          drawIconEl.textContent = '◯'
+          drawTextEl.textContent = '开始框选'
+        }
+      }
+
+      const setMapCenter = (path) => {
+        map.setCenter(centroid(path))
+      }
+
+      const makeLabelContent = (region) => {
+        const desc = region.description || '暂无简介'
+        return `
+          <div class="region-label">
+            <strong>${escapeHtml(region.name)}</strong>
+            <span>${escapeHtml(desc)}</span>
+          </div>
+        `
+      }
+
+      const showRegionInfo = (region) => {
+        if (!infoWindow) {
+          infoWindow = new AMap.InfoWindow({
+            offset: new AMap.Pixel(0, -24),
+          })
+        }
+
+        const html = `
+          <div style="padding:10px 12px;line-height:1.6;">
+            <div style="font-weight:700;margin-bottom:4px;">${escapeHtml(region.name)}</div>
+            <div style="font-size:13px;color:#355346;margin-bottom:8px;">${escapeHtml(region.description || '暂无简介')}</div>
+            <pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:12px;color:#355346;">${escapeHtml(JSON.stringify(region.path, null, 2))}</pre>
+          </div>
+        `
+
+        infoWindow.setContent(html)
+        infoWindow.open(map, centroid(region.path))
+      }
+
+      const removeRegionLayers = () => {
+        regionLayers.forEach(({ polygon, label }) => {
+          polygon?.setMap(null)
+          label?.setMap(null)
+        })
+        regionLayers = []
+      }
+
+      const deleteSavedRegion = (regionId) => {
+        savedRegions = savedRegions.filter((region) => region.id !== regionId)
+        if (editingRegionId === regionId) {
+          editingRegionId = null
+          activeRegion = null
+          clearRegionForm()
+        }
+        saveLocal()
+        renderSavedRegions()
+      }
+
+      const renderSavedRegions = () => {
+        removeRegionLayers()
+        savedList.innerHTML = ''
+
+        savedRegions.forEach((region) => {
+          const polygon = new AMap.Polygon({
+            path: region.path,
+            strokeColor: '#4fca8d',
+            strokeWeight: 3,
+            fillColor: '#4fca8d',
+            fillOpacity: 0.18,
+            bubble: false,
+          })
+          polygon.setMap(map)
+          polygon.on('click', () => loadRegionIntoForm(region))
+          polygon.on('rightclick', (event) => {
+            event?.originalEvent?.preventDefault?.()
+            event?.originalEvent?.stopPropagation?.()
+            deleteSavedRegion(region.id)
+            setStatus(`已删除「${region.name}」`)
+          })
+
+          const label = new AMap.Marker({
+            position: centroid(region.path),
+            content: makeLabelContent(region),
+            anchor: 'bottom-center',
+            offset: new AMap.Pixel(0, 0),
+            bubble: false,
+          })
+          label.setMap(map)
+          label.on('click', () => loadRegionIntoForm(region))
+
+          regionLayers.push({ id: region.id, polygon, label })
+
+          const item = document.createElement('div')
+          item.className = 'saved-item'
+          item.innerHTML = `
+            <h4>${escapeHtml(region.name)}</h4>
+            <p>${escapeHtml(region.description || '暂无简介')}</p>
+            <div class="saved-item__actions">
+              <button type="button" data-action="focus">定位</button>
+              <button type="button" data-action="delete">删除</button>
+            </div>
+          `
+
+          item.querySelector('[data-action="focus"]').addEventListener('click', () => {
+            setMapCenter(region.path)
+            loadRegionIntoForm(region)
+          })
+
+          item.querySelector('[data-action="delete"]').addEventListener('click', () => {
+            deleteSavedRegion(region.id)
+            setStatus(`已删除「${region.name}」`)
+          })
+
+          savedList.appendChild(item)
+        })
+
+        if (!savedRegions.length) {
+          const empty = document.createElement('div')
+          empty.className = 'saved-item'
+          empty.innerHTML = '<p style="margin:0;color:var(--muted);font-size:13px;">暂无保存的区域</p>'
+          savedList.appendChild(empty)
+        }
+      }
+
+      const addDraftPoint = (lnglat) => {
+        const point = [Number(lnglat.lng.toFixed(6)), Number(lnglat.lat.toFixed(6))]
+        draftPoints.push(point)
+
+        const marker = new AMap.Marker({
+          position: point,
+          content:
+            '<div style="width:10px;height:10px;border-radius:50%;background:#fff7d8;border:2px solid #f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.18)"></div>',
+          offset: new AMap.Pixel(-5, -5),
+          bubble: false,
+        })
+        marker.setMap(map)
+        draftMarkers.push(marker)
+
+        if (!draftPolygon) {
+          draftPolygon = new AMap.Polygon({
+            path: draftPoints.slice(),
+            strokeColor: '#4fca8d',
+            strokeWeight: 2,
+            fillColor: '#4fca8d',
+            fillOpacity: 0.12,
+            bubble: false,
+          })
+          draftPolygon.setMap(map)
+        } else {
+          draftPolygon.setPath(draftPoints.slice())
+        }
+
+        setOutput(draftPoints)
+        setStatus(`已添加 ${draftPoints.length} 个点，再点按钮就能结束`)
+      }
+
+      const cancelCurrentShape = (message) => {
+        clearDraft()
+        activeRegion = null
+        editingRegionId = null
+        clearRegionForm()
+        isDrawing = false
+        setDrawButtonState(false)
+        setStatus(message)
+      }
+
+      const commitDraftRegion = () => {
+        if (draftPoints.length < 3) {
+          setStatus('至少需要 3 个点才能结束框选')
+          return
+        }
+
+        const name = regionNameInput.value.trim()
+        const description = regionDescInput.value.trim()
+        if (!name || !description) {
+          window.alert('请先填写区域名称和简介，再结束框选。')
+          if (!name) {
+            regionNameInput.focus()
+          } else {
+            regionDescInput.focus()
+          }
+          return
+        }
+
+        const finalPath = draftPoints.slice()
+        const nextRegion = {
+          id: editingRegionId || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          name,
+          description,
+          path: finalPath,
+        }
+
+        if (editingRegionId) {
+          savedRegions = savedRegions.map((region) =>
+            region.id === editingRegionId ? nextRegion : region
+          )
+        } else {
+          savedRegions.push(nextRegion)
+        }
+
+        saveLocal()
+        setOutput(finalPath)
+        clearDraft()
+        activeRegion = null
+        editingRegionId = null
+        clearRegionForm()
+        isDrawing = false
+        setDrawButtonState(false)
+        renderSavedRegions()
+        setStatus('已保存到资料列表')
+      }
+
+      const exportJson = () => {
+        const payload = {
+          version: 1,
+          exportedAt: new Date().toISOString(),
+          regions: savedRegions,
+        }
+
+        const blob = new Blob([JSON.stringify(payload, null, 2)], {
+          type: 'application/json;charset=utf-8',
+        })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `map-regions-${new Date().toISOString().slice(0, 10)}.json`
+        a.click()
+        URL.revokeObjectURL(url)
+        setStatus('已生成文件并开始下载')
+      }
+
+      const importJson = async (file) => {
+        const text = await file.text()
+        const parsed = JSON.parse(text)
+        const regions = Array.isArray(parsed) ? parsed : parsed.regions
+        if (!Array.isArray(regions)) {
+          throw new Error('JSON 格式不正确，应该是数组或包含 regions 字段')
+        }
+
+        savedRegions = normalizeRegions(regions)
+        saveLocal()
+        renderSavedRegions()
+        setStatus(`已导入 ${savedRegions.length} 个区域`)
+      }
+
+      const initMap = () => {
+        try {
+          map = new AMap.Map('map', {
+            center: MAP_CENTER,
+            zoom: 15,
+            viewMode: '2D',
+            resizeEnable: true,
+          })
+
+          map.on('click', (event) => {
+            if (!isDrawing) return
+            addDraftPoint(event.lnglat)
+          })
+
+          map.on('rightclick', (event) => {
+            if (isDrawing) {
+              event?.originalEvent?.preventDefault?.()
+              event?.originalEvent?.stopPropagation?.()
+              if (draftPoints.length > 0) {
+                cancelCurrentShape('已取消当前框选')
+              }
+            }
+          })
+
+          mapReady = true
+          setOutput([])
+          setDrawButtonState(false)
+          renderSavedRegions()
+          setStatus('地图已加载，点击“开始框选”即可操作')
+        } catch (error) {
+          setStatus(error?.message || '地图初始化失败')
+        }
+      }
+
+      startDrawButton.addEventListener('click', () => {
+        if (!mapReady) {
+          setStatus('请先等待地图加载完成')
+          return
+        }
+
+        if (!isDrawing) {
+          clearDraft()
+          clearRegionForm()
+          activeRegion = null
+          editingRegionId = null
+          isDrawing = true
+          setDrawButtonState(true)
+          setStatus('开始框选：逐次点击顶点，最后再点按钮结束')
+          return
+        }
+
+        commitDraftRegion()
+      })
+
+      saveCurrentButton.addEventListener('click', () => {
+        commitDraftRegion()
+      })
+
+      exportJsonButton.addEventListener('click', exportJson)
+
+      importJsonButton.addEventListener('click', () => fileInput.click())
+
+      fileInput.addEventListener('change', async () => {
+        const file = fileInput.files?.[0]
+        if (!file) return
+        try {
+          await importJson(file)
+        } catch (error) {
+          setStatus(error?.message || '导入失败')
+        } finally {
+          fileInput.value = ''
+        }
+      })
+
+      const handleDrop = async (event) => {
+        event.preventDefault()
+        dropHint.classList.remove('show')
+        const file = event.dataTransfer?.files?.[0]
+        if (!file) return
+        try {
+          await importJson(file)
+        } catch (error) {
+          setStatus(error?.message || '导入失败')
+        }
+      }
+
+      mapShell.addEventListener('dragover', (event) => {
+        event.preventDefault()
+        dropHint.classList.add('show')
+      })
+
+      mapShell.addEventListener('dragleave', () => {
+        dropHint.classList.remove('show')
+      })
+
+      mapShell.addEventListener('drop', handleDrop)
+
+      window.addEventListener('load', () => {
+        loadLocal()
+        initMap()
+      })
+    </script>
+  </body>
+</html>
