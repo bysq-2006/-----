@@ -63,6 +63,7 @@ async def me(user=Depends(current_user)):
         "display_name": user.display_name,
     }
 
+# conda activate teacher   
 # cd d:\bysq\景区数字人
 # uvicorn backend.main:app --reload
 
